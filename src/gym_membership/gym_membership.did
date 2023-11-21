@@ -1,0 +1,35 @@
+type Error = variant { NotFound : record { msg : text } };
+type Gym = record {
+  id : nat64;
+  updated_at : opt nat64;
+  members : vec text;
+  gym_banner : text;
+  owner : text;
+  gym_name : text;
+  gym_location : text;
+  gym_services : vec GymService;
+  created_at : nat64;
+};
+type GymPayload = record {
+  gym_banner : text;
+  gym_name : text;
+  gym_location : text;
+};
+type GymService = record {
+  updated_at : opt nat64;
+  service_name : text;
+  service_description : text;
+  created_at : nat64;
+};
+type GymServicePayload = record {
+  service_name : text;
+  service_description : text;
+};
+type Result = variant { Ok : Gym; Err : Error };
+service : {
+  add_gym_service : (nat64, GymServicePayload) -> (Result);
+  create_gym : (GymPayload) -> (opt Gym);
+  delete_gym : (nat64) -> (Result);
+  get_gym : (nat64) -> (Result) query;
+  update_gym : (nat64, GymPayload) -> (Result);
+}
