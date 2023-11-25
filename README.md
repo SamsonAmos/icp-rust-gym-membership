@@ -1,4 +1,6 @@
-# icp_rust_message_board_contract
+# ICP_Rust_Gym_Membership_Contract"
+
+ICP_Gym_Membership is a canister, Rust project on the ICP platform, where users can create a gym, add services to the gym, delete that gym, update the gym, see all gyms available and it also allow users to register for a gym.
 
 ### Requirements
 * rustc 1.64 or higher
