@@ -42,6 +42,29 @@ struct GymRegistration {
     user_name : String,
     owner : String,
     created_at: u64,
+    expiration_date: u64,
+}
+#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
+struct GymClass {
+    class_id: u64,
+    class_name: String,
+    description: String,
+    schedule: u64, // Unix timestamp for the class schedule
+    registered_members: Vec<u64>, // List of user IDs
+}
+impl Storable for GymClass {
+    fn to_bytes(&self) -> Cow<[u8]> {
+        Cow::Owned(Encode!(self).unwrap())
+    }
+
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).unwrap()
+    }
+}
+
+impl BoundedStorable for GymClass {
+    const MAX_SIZE: u32 = 1024;
+    const IS_FIXED_SIZE: bool = false;
 }
 
 // a trait that must be implemented for a struct that is stored in a stable struct
@@ -110,6 +133,9 @@ thread_local! {
         RefCell::new(StableBTreeMap::init(
             MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(1)))
     ));
+    static GYM_CLASS_STORAGE: RefCell<StableBTreeMap<u64, GymClass, Memory>> = RefCell::new(
+        StableBTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(5))))
+    );
 
 
     static GYM_SERVICE_STORAGE: RefCell<StableBTreeMap<u64, GymService, Memory>> =
@@ -146,7 +172,12 @@ struct GymServicePayload {
 struct GymRegistrationPayload {
     user_name : String,
 }
-
+#[derive(candid::CandidType, Serialize, Deserialize, Default)]
+struct GymClassPayload {
+    class_name: String,
+    description: String,
+    schedule: u64,
+}
 // Function for creating a gym
 #[ic_cdk::update]
 fn create_gym(payload: GymPayload) -> Option<Gym> {
@@ -179,33 +210,41 @@ fn create_gym(payload: GymPayload) -> Option<Gym> {
 // Function for registering for a gym
 #[ic_cdk::update]
 fn register_for_a_gym(id: u64, payload: GymRegistrationPayload) -> Result<Gym, Error> {
+    let membership_duration: u64 = 365 * 24 * 60 * 60; // One year in seconds
+    let current_time = time();
+    let expiration_date = current_time + membership_duration; // Set expiration date to one year from now
     
     // GymRegistration object using the provided payload and caller's information
     let gym_registration = GymRegistration {
-        user_name : payload.user_name,
+        user_name: payload.user_name,
         owner: caller().to_string(),
-        created_at: time(),
+        created_at: current_time,
+        expiration_date, // Use the calculated expiration date
     };
 
-    //  Find the gym by ID in the storage
+    // Find the gym by ID in the storage
     match GYM_STORAGE.with(|service| service.borrow().get(&id)) {
-    Some(mut gym) => {
-        
-    // Add the gym registration to the gym's members list
-    gym.members.push(gym_registration);
-    
-    // Update the gym in the storage
-    do_insert(&gym);
+        Some(mut gym) => {
+            // Add the gym registration to the gym's members list
+            gym.members.push(gym_registration);
+            
+            // Update the gym in the storage
+            do_insert(&gym);
 
-    Ok(gym.clone())
+            Ok(gym.clone())
+        }
+        // If the gym is not found, return a NotFound error
+        None => Err(Error::NotFound {
+            msg: format!("Couldn't update gym with id={}. Gym not found", id),
+        }),
     }
+}
 
-    // If the gym is not found, return a NotFound error
-    None => Err(Error::NotFound {
-        msg: format!("Couldn't update  gym with id={}. Gym not found", id),
-    }),
+// Helper function to perform insert
+fn do_insert(gym: &Gym) {
+    GYM_STORAGE.with(|service| service.borrow_mut().insert(gym.id, gym.clone()));
 }
-}
+
 
 
 // Function for adding services to a gym
@@ -315,6 +354,77 @@ fn update_gym(id: u64, payload: GymPayload) -> Result<Gym, Error> {
         }),
     }
 }
+#[ic_cdk::update]
+fn renew_membership(user_id: u64) -> Result<(), Error> {
+    let renewal_period: u64 = 365 * 24 * 60 * 60; // One year in seconds
+
+    GYM_REGISTRATION.with(|registrations| {
+        let mut registrations_borrow = registrations.borrow_mut();
+
+        if let Some(mut registration) = registrations_borrow.remove(&user_id) {
+            // Check if the membership is due for renewal
+            if registration.expiration_date <= time() {
+                registration.expiration_date += renewal_period;
+                registrations_borrow.insert(user_id, registration); // Re-insert the updated registration
+                Ok(())
+            } else {
+                registrations_borrow.insert(user_id, registration); // Re-insert the unmodified registration
+                Err(Error::NotDueForRenewal {
+                    msg: "Membership is not due for renewal yet.".to_string(),
+                })
+            }
+        } else {
+            Err(Error::NotFound {
+                msg: "User registration not found.".to_string(),
+            })
+        }
+    })
+}
+fn generate_new_id() -> u64 {
+    ID_COUNTER.with(|counter| {
+        let current_value = *counter.borrow().get();
+        counter.borrow_mut().set(current_value + 1).unwrap();
+        current_value + 1
+    })
+}
+#[ic_cdk::update]
+fn create_gym_class(payload: GymClassPayload) -> Result<GymClass, Error> {
+    let class_id = generate_new_id();
+
+    let gym_class = GymClass {
+        class_id,
+        class_name: payload.class_name,
+        description: payload.description,
+        schedule: payload.schedule,
+        registered_members: Vec::new(),
+    };
+
+    GYM_CLASS_STORAGE.with(|classes| classes.borrow_mut().insert(class_id, gym_class.clone()));
+    Ok(gym_class)
+}
+
+#[ic_cdk::update]
+fn book_gym_class(user_id: u64, class_id: u64) -> Result<(), Error> {
+    GYM_CLASS_STORAGE.with(|classes| {
+        let mut classes_borrow = classes.borrow_mut();
+        if let Some(mut gym_class) = classes_borrow.remove(&class_id) {
+            if !gym_class.registered_members.contains(&user_id) {
+                gym_class.registered_members.push(user_id);
+                classes_borrow.insert(class_id, gym_class); // Re-insert the updated class
+                Ok(())
+            } else {
+                classes_borrow.insert(class_id, gym_class); // Re-insert the unmodified class
+                Err(Error::AlreadyRegistered {
+                    msg: "User already registered for this class.".to_string(),
+                })
+            }
+        } else {
+            Err(Error::NotFound {
+                msg: "Gym class not found.".to_string(),
+            })
+        }
+    })
+}
 
 
 // Function to delete a gym by it's ID
@@ -353,12 +463,14 @@ fn delete_gym(id: u64) -> Result<Gym, Error> {
 enum Error {
     NotFound { msg: String },
     NotAuthorized { msg: String },
+    AlreadyRegistered { msg: String },
+    NotDueForRenewal { msg: String },
 }
 
 // helper method to perform insert.
-fn do_insert(gym: &Gym) {
-    GYM_STORAGE.with(|service| service.borrow_mut().insert(gym.id, gym.clone()));
-}
+// fn do_insert(gym: &Gym) {
+//     GYM_STORAGE.with(|service| service.borrow_mut().insert(gym.id, gym.clone()));
+// }
 
 // a helper method to get a message by id. used in get_message/update_message
 fn _get_gym(id: &u64) -> Option<Gym> {
