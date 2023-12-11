@@ -1,6 +1,8 @@
 type Error = variant {
+  PayloadInvalid : record { msg : text };
   NotFound : record { msg : text };
   NotAuthorized : record { msg : text };
+  AlreadyMember : record { msg : text };
 };
 type Gym = record {
   id : nat64;
@@ -38,7 +40,7 @@ type Result = variant { Ok : Gym; Err : Error };
 type Result_1 = variant { Ok : vec Gym; Err : Error };
 service : {
   add_gym_service : (nat64, GymServicePayload) -> (Result);
-  create_gym : (GymPayload) -> (opt Gym);
+  create_gym : (GymPayload) -> (Result);
   delete_gym : (nat64) -> (Result);
   get_all_gyms : () -> (Result_1) query;
   get_gym : (nat64) -> (Result) query;
