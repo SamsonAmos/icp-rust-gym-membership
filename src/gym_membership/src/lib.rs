@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate serde;
 use candid::{Decode, Encode};
+use validator::Validate;
 use ic_cdk::api::time;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BoundedStorable, Cell, DefaultMemoryImpl, StableBTreeMap, Storable};
@@ -125,32 +126,41 @@ thread_local! {
 
 
 // Struct definition for GymPayload
-#[derive(candid::CandidType, Serialize, Deserialize, Default)]
+#[derive(candid::CandidType, Serialize, Deserialize, Default, Validate)]
 struct GymPayload {
+    #[validate(length(min = 1))]
     gym_name : String,
+    #[validate(length(min = 2))]
     gym_location : String,
+    #[validate(length(min = 1))]
     gym_banner : String,
 }
 
 
 // Struct definition for GymServicePayload
-#[derive(candid::CandidType, Serialize, Deserialize, Default)]
+#[derive(candid::CandidType, Serialize, Deserialize, Default, Validate)]
 struct GymServicePayload {
+    #[validate(length(min = 1))]
     service_name : String,
+    #[validate(length(min = 10))]
     service_description : String,
 }
 
 
 // Struct definition for GymRegistrationPayload
-#[derive(candid::CandidType, Serialize, Deserialize, Default)]
+#[derive(candid::CandidType, Serialize, Deserialize, Default, Validate)]
 struct GymRegistrationPayload {
+    #[validate(length(min = 1))]
     user_name : String,
 }
 
 // Function for creating a gym
 #[ic_cdk::update]
-fn create_gym(payload: GymPayload) -> Option<Gym> {
-    
+fn create_gym(payload: GymPayload) -> Result<Gym, Error> {
+    let check_payload = payload.validate();
+    if check_payload.is_err(){
+        return Err(Error:: PayloadInvalid{msg: check_payload.unwrap_err().to_string()})
+    }
     // Increment the ID counter to generate a new unique ID for the gym
     let id = ID_COUNTER
         .with(|counter| {
@@ -172,14 +182,17 @@ fn create_gym(payload: GymPayload) -> Option<Gym> {
         updated_at: None,
     };
     do_insert(&gym);
-    Some(gym)
+    Ok(gym)
 }
 
 
 // Function for registering for a gym
 #[ic_cdk::update]
 fn register_for_a_gym(id: u64, payload: GymRegistrationPayload) -> Result<Gym, Error> {
-    
+    let check_payload = payload.validate();
+    if check_payload.is_err(){
+        return Err(Error:: PayloadInvalid{msg: check_payload.unwrap_err().to_string()})
+    }
     // GymRegistration object using the provided payload and caller's information
     let gym_registration = GymRegistration {
         user_name : payload.user_name,
@@ -190,6 +203,11 @@ fn register_for_a_gym(id: u64, payload: GymRegistrationPayload) -> Result<Gym, E
     //  Find the gym by ID in the storage
     match GYM_STORAGE.with(|service| service.borrow().get(&id)) {
     Some(mut gym) => {
+
+    let is_already_member = gym.members.iter().any(|member| member.owner == gym_registration.owner);
+    if is_already_member{
+        return Err(Error::AlreadyMember { msg: format!("Caller={} is already a member of this gym.", caller()) })
+    }
         
     // Add the gym registration to the gym's members list
     gym.members.push(gym_registration);
@@ -211,6 +229,10 @@ fn register_for_a_gym(id: u64, payload: GymRegistrationPayload) -> Result<Gym, E
 // Function for adding services to a gym
 #[ic_cdk::update]
 fn add_gym_service(id: u64, payload : GymServicePayload) -> Result<Gym, Error> {
+    let check_payload = payload.validate();
+    if check_payload.is_err(){
+        return Err(Error:: PayloadInvalid{msg: check_payload.unwrap_err().to_string()})
+    }
     match GYM_STORAGE.with(|service| service.borrow().get(&id)) {
         Some(mut gym) => {
         // Checks if the caller is the owner of the gym
@@ -288,12 +310,17 @@ fn get_all_gyms() -> Result<Vec<Gym>, Error> {
 fn update_gym(id: u64, payload: GymPayload) -> Result<Gym, Error> {
     match GYM_STORAGE.with(|service| service.borrow().get(&id)) {
         Some(mut gym) => {
+            let check_payload = payload.validate();
+            if check_payload.is_err(){
+                return Err(Error:: PayloadInvalid{msg: check_payload.unwrap_err().to_string()})
+            }
         // Checks if the caller is the owner of the gym
             if gym.owner != caller().to_string(){
                 return Err(Error::NotAuthorized {
                     msg: format!("You are not the owner"),
                 });
             }
+            
 
             else {
             // Update gym details with the provided payload
@@ -353,6 +380,8 @@ fn delete_gym(id: u64) -> Result<Gym, Error> {
 enum Error {
     NotFound { msg: String },
     NotAuthorized { msg: String },
+    PayloadInvalid {msg: String},
+    AlreadyMember {msg: String}
 }
 
 // helper method to perform insert.
